@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,11 +21,12 @@ import (
 
 // Defined default value.
 const (
-	DefaultConcurrent    = 20
-	DefaultMaxConcurrent = 1000
-	DefaultErrorChanSize = 32
-	ScheduleSleep        = time.Second * 1
-	EmptyScheduleSleep   = ScheduleSleep * 3
+	DefaultConcurrent        = 20
+	DefaultMaxConcurrent     = 1000
+	DefaultErrorChanSize     = 32
+	ScheduleSleep            = time.Second * 1
+	EmptyScheduleSleep       = ScheduleSleep * 3
+	DefaultPrintStatInterval = time.Second * 10
 )
 
 // Schedule implement Scheduler interface, use chan control goroutine count.
@@ -74,6 +76,10 @@ type Schedule struct {
 	//
 	// Stat enabled, default is false.
 	EnableStat bool `json:"enable_stat"`
+	// Print stat enabled, default is false.
+	EnablePrintStat bool `json:"enable_print_stat"`
+	// Print stat intercval, default is 10s.
+	PrintStatInterval time.Duration `json:"print_stat_interval"`
 	// Logger config.
 	ZapConfig *zapConfig.Config `json:"logger"`
 	// Scheduler concurrent.
@@ -134,8 +140,8 @@ func (this *Schedule) scheduler(runner Runner) {
 
 		// push Runner into Queuer.
 		if push {
-			// runner expired?
-			if !runner.Expired() {
+			// runner reusable?
+			if runner.Reusable() {
 				if err := this.queue.Push(runner); err != nil {
 					if this.EnableStat {
 						this.errors.Mark(1)
@@ -144,12 +150,12 @@ func (this *Schedule) scheduler(runner Runner) {
 						this.error <- err
 					}
 				}
-				this.logger.Debug("scheduler push", zap.Any("runner", runner))
+				this.logger.Debug("push reusable runner", zap.String("id", runner.GetId()), zap.String("name", runner.GetName()), zap.String("state", runner.GetState().String()), zap.Int64("actionName", runner.GetActionTime()))
 			} else {
-				this.logger.Debug("scheduler give up expired runner", zap.Any("runner", runner))
+				this.logger.Debug("give up not reusable runner", zap.String("id", runner.GetId()), zap.String("name", runner.GetName()), zap.String("state", runner.GetState().String()), zap.Bool("reusable", runner.Reusable()))
 			}
 		} else {
-			this.logger.Debug("scheduler give up runner", zap.Any("runner", runner), zap.Error(err))
+			this.logger.Debug("give up runner", zap.String("id", runner.GetId()), zap.String("name", runner.GetName()), zap.String("state", runner.GetState().String()), zap.Error(err))
 		}
 		// remove runner from RealtimeStore.
 		if err := this.store.Delete(runner); err != nil {
@@ -229,11 +235,11 @@ func (this *Schedule) run() (err error) {
 	if err == context.Canceled || err == context.DeadlineExceeded {
 		return nil
 	} else if err != nil {
-		this.logger.Error("scheduler running get error", zap.Error(err))
+		this.logger.Error("pop runners error", zap.Error(err))
 		return err
 	}
 
-	this.logger.Debug("scheduler get runners", zap.Int("size", len(runners)), zap.Int64("length", this.GetQueuer().Length()))
+	this.logger.Debug("pop runners", zap.Int("count", len(runners)), zap.Int64("length", this.GetQueuer().Length()))
 
 	if len(runners) == 0 {
 		this.offset = 0
@@ -245,10 +251,10 @@ func (this *Schedule) run() (err error) {
 
 	// loop runners.
 	for _, runner := range runners {
-		this.logger.Debug("scheduler running waiting...")
+		this.logger.Debug("waiting ...")
 		// send waiting chan, when it's full will be block.
 		this.waiting <- struct{}{}
-		this.logger.Debug("scheduler running get signal, scheduler runner", zap.Any("runner", runner))
+		this.logger.Debug("got signal", zap.String("id", runner.GetId()), zap.String("name", runner.GetName()))
 		// go scheduler runner.
 		go this.scheduler(runner)
 	}
@@ -260,15 +266,41 @@ func (this *Schedule) run() (err error) {
 
 // schedule stat metrics.
 func (this *Schedule) stat() {
-	defer this.logger.Debug("scheduler metrics exit...")
-
-	if !this.EnableStat {
-		return
-	}
+	defer this.logger.Debug("metrics exit...")
 
 	// use ticker control stat metrics.
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+
+	this.errors = metrics.NewMeter()
+	if err := metrics.Register("schedule.errors", this.errors); err != nil {
+
+	}
+
+	this.total = metrics.NewMeter()
+	if err := metrics.Register("schedule.runner.total", this.total); err != nil {
+
+	}
+
+	this.runs = metrics.NewMeter()
+	if err := metrics.Register("schedule.runner.runs", this.runs); err != nil {
+
+	}
+
+	this.successes = metrics.NewMeter()
+	if err := metrics.Register("schedule.runner.successes", this.successes); err != nil {
+
+	}
+
+	this.failures = metrics.NewMeter()
+	if err := metrics.Register("schedule.runner.failures", this.failures); err != nil {
+
+	}
+
+	this.retries = metrics.NewMeter()
+	if err := metrics.Register("schedule.runner.retries", this.retries); err != nil {
+
+	}
 
 	maxConcurrentGauge := metrics.NewGauge()
 	if err := metrics.Register("schedule.max_concurrent", maxConcurrentGauge); err != nil {
@@ -290,13 +322,33 @@ func (this *Schedule) stat() {
 	for {
 		select {
 		case <-this.context.Done():
-			this.logger.Debug("scheduler metrics context exit...")
+			this.logger.Debug("metrics context exit...")
 			return
 		case <-ticker.C:
 			maxConcurrentGauge.Update(int64(this.getMaxConcurrent()))
 			concurrentGauge.Update(int64(this.getConcurrent()))
 			queueLengthGauge.Update(this.queue.Length())
 			queueWaitingGauge.Update(this.queue.Waiting())
+		}
+	}
+}
+
+// Implement go-metrics Logger interface.
+func (this *Schedule) Printf(format string, v ...interface{}) {
+	this.logger.Sugar().Infof(strings.Replace(format, "\n", "", -1), v...)
+}
+
+// schedule print metrics.
+func (this *Schedule) printMetrics(freq time.Duration) {
+	ticker := time.NewTicker(freq)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-this.context.Done():
+			this.logger.Debug("metrics context exit...")
+			return
+		case <-ticker.C:
+			metrics.Log(metrics.DefaultRegistry, freq, this)
 		}
 	}
 }
@@ -319,6 +371,11 @@ func (this *Schedule) GetContext() context.Context {
 // Get Queuer.
 func (this *Schedule) GetQueuer() Queuer {
 	return this.queue
+}
+
+// Get Logger.
+func (this *Schedule) GetLogger() *zap.Logger {
+	return this.logger
 }
 
 // Initialize Schedule with context.
@@ -351,8 +408,11 @@ func (this *Schedule) Init(ctx context.Context) error {
 
 		this.status = Init
 
-		this.logger.Debug("scheduler init")
+		this.logger = this.logger.Named("scheduler")
+
 	})
+
+	this.logger.Debug("init ...")
 
 	return nil
 }
@@ -361,32 +421,33 @@ func (this *Schedule) Init(ctx context.Context) error {
 func (this *Schedule) Run() (err error) {
 
 	if this.context == nil {
-		return errors.NewCode("", "engine need init first")
+		return errors.New("engine need init first")
 	}
 
 	if this.status == Running {
-		return errors.NewCode("", "engine is running")
+		return errors.New("engine is running")
 	}
 
 	defer func() {
 		this.status = Stopped
-		this.logger.Debug("scheduler exit by", zap.Error(err))
+		this.logger.Debug("exit by", zap.Error(err))
 	}()
 
 	// start running.
 	this.status = Running
-	this.logger.Debug("scheduler running")
+	this.logger.Debug("running ...")
 
 	// loop run.
 	for {
 		select {
 		case <-this.context.Done():
-			this.logger.Debug("scheduler run context exit...")
+			this.logger.Debug("get context signal")
 			close(this.waiting)
 			return this.context.Err()
 		default:
 			err = this.run()
 			if err != nil {
+				this.logger.Error("run error", zap.Error(err))
 				if this.EnableStat {
 					this.errors.Mark(1)
 				}
@@ -415,7 +476,7 @@ func (this *Schedule) Stop() error {
 
 // Stop a runner by id.
 func (this *Schedule) StopRunner(id string) (err error) {
-	this.logger.Debug("scheduler Cancel runner", zap.Any("id", id))
+	this.logger.Debug("stop runner", zap.Any("id", id))
 
 	var runner Runner
 	// load by id and stopped.
@@ -434,7 +495,7 @@ func (this *Schedule) StopRunner(id string) (err error) {
 
 // Remove a runner by id.
 func (this *Schedule) RemoveRunner(id string) (err error) {
-	this.logger.Debug("scheduler Remove runner", zap.Any("id", id))
+	this.logger.Debug("remove runner", zap.Any("id", id))
 
 	var runner Runner
 	// load by id and remove.
@@ -567,16 +628,18 @@ func (this Schedule) MarshalJSON() (data []byte, err error) {
 }
 
 // New scheduler with params.
-func New(queue Queuer, store RealtimeStore, maxConcurrent uint64, opts ...ScheduleOption) Scheduler {
+func New(queue Queuer, store RealtimeStore, opts ...ScheduleOption) Scheduler {
 
 	// new engine.
 	e := &Schedule{
-		queue:         queue,
-		store:         store,
-		status:        Created,
-		EnableStat:    false,
-		Concurrent:    DefaultConcurrent,
-		MaxConcurrent: maxConcurrent,
+		queue:             queue,
+		store:             store,
+		status:            Created,
+		EnableStat:        false,
+		EnablePrintStat:   false,
+		PrintStatInterval: DefaultPrintStatInterval,
+		Concurrent:        DefaultConcurrent,
+		MaxConcurrent:     DefaultMaxConcurrent,
 	}
 
 	// must set queue.
@@ -596,40 +659,16 @@ func New(queue Queuer, store RealtimeStore, maxConcurrent uint64, opts ...Schedu
 
 	e.waiting = make(chan struct{}, e.MaxConcurrent)
 
-	if e.EnableStat {
-		e.errors = metrics.NewMeter()
-		if err := metrics.Register("schedule.errors", e.errors); err != nil {
-
-		}
-
-		e.total = metrics.NewMeter()
-		if err := metrics.Register("schedule.runner.total", e.total); err != nil {
-
-		}
-
-		e.runs = metrics.NewMeter()
-		if err := metrics.Register("schedule.runner.runs", e.runs); err != nil {
-
-		}
-
-		e.successes = metrics.NewMeter()
-		if err := metrics.Register("schedule.runner.successes", e.successes); err != nil {
-
-		}
-
-		e.failures = metrics.NewMeter()
-		if err := metrics.Register("schedule.runner.failures", e.failures); err != nil {
-
-		}
-
-		e.retries = metrics.NewMeter()
-		if err := metrics.Register("schedule.runner.retries", e.retries); err != nil {
-
-		}
+	// go print metrics.
+	if e.EnablePrintStat {
+		e.EnableStat = true
+		go e.printMetrics(e.PrintStatInterval)
 	}
 
 	// go stat metrics.
-	go e.stat()
+	if e.EnableStat {
+		go e.stat()
+	}
 
 	return e
 }

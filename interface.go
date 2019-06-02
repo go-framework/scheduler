@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"context"
+
+	"go.uber.org/zap"
 )
 
 // Template defined for compose a JSON/YAML etc., format data to new Runner .
@@ -24,6 +26,8 @@ type Template struct {
 type Runner interface {
 	// Get identifier of Runner.
 	GetId() string
+	// Get name of Runner.
+	GetName() string
 	// Get Runner action Unix time.
 	GetActionTime() int64
 	// Get Runner State.
@@ -37,8 +41,8 @@ type Runner interface {
 	Run(context.Context) error
 	// Finalizer with error.
 	Finalizer(error)
-	// Runner Expired, when false Scheduler will put into Queuer.
-	Expired() bool
+	// Runner Reusable, when true Scheduler will put into Queuer.
+	Reusable() bool
 
 	// Stop Runner.
 	Stop() error
@@ -94,6 +98,8 @@ type Scheduler interface {
 	GetContext() context.Context
 	// Get Queuer.
 	GetQueuer() Queuer
+	// Get Logger.
+	GetLogger() *zap.Logger
 	// Get error chan.
 	Error() <-chan error
 
@@ -108,4 +114,10 @@ type Scheduler interface {
 	StopRunner(string) error
 	// Remove a Runner with string id.
 	RemoveRunner(string) error
+}
+
+// Progress interface.
+type Progresser interface {
+	// Progress.
+	Progress(event string, data interface{})
 }

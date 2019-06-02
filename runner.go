@@ -23,6 +23,11 @@ func (r *idRunner) GetId() string {
 	return r.id
 }
 
+// Get name of runner.
+func (r *idRunner) GetName() string {
+	return r.id
+}
+
 // Get type of runner.
 func (r *idRunner) GetType() string {
 	return "IdRunner"
@@ -65,8 +70,8 @@ func (r idRunner) Check() error {
 	return nil
 }
 
-// Runner Expired, when false Scheduler will put into Queuer.
-func (r idRunner) Expired() bool {
+// Runner Reusable, when true Scheduler will put into Queuer.
+func (r idRunner) Reusable() bool {
 	return true
 }
 
@@ -129,11 +134,11 @@ func withTaskOption(opt TaskOption) testRunnerOption {
 func (r *testRunner) simulateStatus(e error) (err error) {
 	states := []State{Succeed, Failed, Retrying, Stopped, Canceled}
 	random := rand.Intn(len(states))
-	status := states[random]
+	state := states[random]
 
-	r.logger.Sugar().Debug("simulate status ", status)
+	r.logger.Sugar().Debug("simulate status ", state)
 
-	switch status {
+	switch state {
 	case Succeed:
 		err = nil
 	case Failed:
@@ -147,7 +152,7 @@ func (r *testRunner) simulateStatus(e error) (err error) {
 		err = fmt.Errorf("simulate runner canceled")
 	}
 
-	r.Status = status
+	r.State = state
 
 	return
 }
@@ -236,7 +241,7 @@ func (r *testRunner) Cancel() {
 	r.GetLogger().Sugar().Debug("manual cancel ", r.Name)
 
 	r.Task.Cancel()
-	if r.Status == Running {
+	if r.State == Running {
 		r.exit <- ManualCancelErr
 	}
 }
@@ -284,17 +289,12 @@ func (r testRunner) Check() error {
 	return r.Task.Check()
 }
 
-// Runner Expired, when false Scheduler will put into Queuer.
-func (r testRunner) Expired() bool {
-	return r.Task.Expired()
-}
-
 // Implement Stringer.
 func (r testRunner) String() string {
 	if data, err := jsoniter.Marshal(r); err == nil {
 		return *(*string)(unsafe.Pointer(&data))
 	}
-	return fmt.Sprintf("name: %s period: %d statue: %v action: %d elapsed: %d", r.Name, r.Period, r.Status, r.ActionAt, r.Elapsed)
+	return fmt.Sprintf("name: %s period: %d state: %v action: %d elapsed: %d", r.Name, r.Period, r.State, r.ActionAt, r.Elapsed)
 }
 
 // new test runner.

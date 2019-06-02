@@ -52,7 +52,7 @@ func initScheduler(ctx context.Context) error {
 
 	ctx = NewRunnerZapConfigContext(ctx, zapConfigForRunner)
 
-	scheduler = New(queue, store, 10)
+	scheduler = New(queue, store, WithMaxConcurrentOption(10))
 
 	return scheduler.Init(ctx)
 }

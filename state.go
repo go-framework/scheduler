@@ -44,3 +44,8 @@ func (s State) String() string {
 
 	return "Undefined"
 }
+
+// Get State value.
+func (s State) Value() uint {
+	return uint((s))
+}

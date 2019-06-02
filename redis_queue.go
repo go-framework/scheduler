@@ -75,7 +75,7 @@ func (this *RedisQueue) getRunner(raw string) (Runner, error) {
 	// load Runner's type from store.
 	any, ok := this.types.Load(typ)
 	if !ok {
-		return nil, errors.New("not have" + typ)
+		return nil, errors.New("not register runner type: " + typ)
 	}
 	// should be Runner type.
 	runner, ok := any.(Runner)
@@ -264,9 +264,9 @@ func (this *RedisQueue) OnePush(runner Runner) (err error) {
 	keys := []string{this.setKey, this.hashKey, this.privateHashKey}
 	var args []interface{}
 
-	// expired?
-	if runner.Expired() {
-		return errors.New("runner is expired")
+	// reusable?
+	if !runner.Reusable() {
+		return errors.New("runner is not reusable")
 	}
 
 	// marshal Runner.
@@ -306,8 +306,9 @@ func (this *RedisQueue) MultiPush(runners ...Runner) (err error) {
 	pipeline := this.client.TxPipeline()
 
 	for _, runner := range runners {
-		if runner.Expired() {
-			err = errors.Append(err, fmt.Errorf("%s is expired", runner.GetId()))
+		// runner is reusable?
+		if !runner.Reusable() {
+			err = errors.Append(err, fmt.Errorf("%s is not reusable", runner.GetId()))
 			continue
 		}
 
@@ -347,7 +348,9 @@ func (this *RedisQueue) MultiPush(runners ...Runner) (err error) {
 	}
 
 	// pipeline exec.
-	_, err = pipeline.Exec()
+	if _, e := pipeline.Exec(); e != nil {
+		err = errors.Append(err, e)
+	}
 
 	return
 }
@@ -368,6 +371,7 @@ func (this *RedisQueue) Push(runners ...Runner) (err error) {
 				err = errors.Append(err, fmt.Errorf("%s %v", runner.GetId(), e))
 			}
 		}
+		return
 	}
 
 	return this.MultiPush(runners...)

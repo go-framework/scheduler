@@ -8,7 +8,10 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/go-framework/zap"
+	"github.com/google/uuid"
+	"go.uber.org/zap"
+
+	zapConfig "github.com/go-framework/zap"
 )
 
 // Defined default value.
@@ -31,8 +34,10 @@ type Task struct {
 	//
 	// Task id is hash(Name).
 	Tid string `json:"tid"`
-	// Task status.
-	Status State `json:"status"`
+	// Task run id.
+	Rid string `json:"rid"`
+	// Task state.
+	State State `json:"state"`
 	// Task create time.
 	CreatedAt int64 `json:"created_at"`
 	// Task update time.
@@ -67,7 +72,7 @@ type Task struct {
 	// Task max permit run count: 0 - unlimited.
 	MaxRuns uint64 `json:"max_runs"`
 	// Task logger config.
-	ZapConfig *zap.Config `json:"logger"`
+	ZapConfig *zapConfig.Config `json:"logger"`
 }
 
 // stat Task run elapsed and times.
@@ -77,12 +82,25 @@ func (t *Task) stat() {
 }
 
 // Set Task tid.
-func (t *Task) SetTid() {
+func (t *Task) SetTid() (err error) {
 	h := sha1.New()
-	io.WriteString(h, t.Name)
+	_, err = io.WriteString(h, t.Name)
 	bs := h.Sum(nil)
 
 	t.Tid = hex.EncodeToString(bs)
+
+	return err
+}
+
+// Set Task rid.
+func (t *Task) SetRid() error {
+	uid, err := uuid.NewUUID()
+	if err != nil {
+		return err
+	}
+	t.Rid = uid.String()
+
+	return nil
 }
 
 // New Task logger.
@@ -106,7 +124,7 @@ func (t *Task) NewLogger(ctx context.Context) *zap.Logger {
 
 	// if Logger is nil then new as zap debug config.
 	if t.ZapConfig == nil {
-		t.ZapConfig = zap.GetDebugConfig()
+		t.ZapConfig = zapConfig.GetDebugConfig()
 	}
 
 	// get zap option from context for runner.
@@ -125,6 +143,9 @@ func (t *Task) NewLogger(ctx context.Context) *zap.Logger {
 	if t.logger == nil {
 		t.logger = t.ZapConfig.NewZapLogger()
 	}
+
+	// set logger name.
+	t.logger = t.logger.Named(t.Name).With(zap.String("rid", t.Rid), zap.String("tid", t.Tid))
 
 	return t.logger
 }
@@ -153,7 +174,7 @@ func (t Task) Clone() Task {
 func (t *Task) CanAction() bool {
 	now := time.Now().Unix()
 	if now >= t.ActionAt && (t.MaxRuns == 0 || t.Runs < t.MaxRuns) {
-		switch t.Status {
+		switch t.State {
 		case Created, Succeed, Failed:
 			return true
 		case Queued:
@@ -185,7 +206,7 @@ func (t *Task) UpdateActionTime() {
 // if not set action at then equal created at.
 func (t *Task) Created() {
 	t.CreatedAt = time.Now().Unix()
-	t.Status = Created
+	t.State = Created
 	if t.ActionAt == 0 {
 		random := ActionBaseTime + rand.Int63n(ActionRandomTime)
 		t.ActionAt = t.CreatedAt + random
@@ -194,18 +215,18 @@ func (t *Task) Created() {
 
 // Task is in queued.
 func (t *Task) InQueued() {
-	t.Status = Queued
+	t.State = Queued
 }
 
 // Start Task.
 func (t *Task) Start() {
 	t.Elapsed = time.Now().Unix()
-	t.Status = Running
+	t.State = Running
 }
 
 // Task run succeed.
 func (t *Task) Succeed() {
-	t.Status = Succeed
+	t.State = Succeed
 	t.Error = ""
 	t.Successes++
 }
@@ -221,7 +242,7 @@ func (t *Task) Failed(err error) {
 // Task retrying after delay times.
 func (t *Task) Retrying(delay time.Duration, err error) {
 	t.ActionAt = time.Now().Add(delay).Unix()
-	t.Status = Retrying
+	t.State = Retrying
 	t.Error = err.Error()
 	t.Retries++
 }
@@ -312,6 +333,16 @@ func (t *Task) GetId() string {
 	return t.Tid
 }
 
+// Get run identifier of runner.
+func (t *Task) GetRid() string {
+	return t.Rid
+}
+
+// Get name of runner.
+func (t *Task) GetName() string {
+	return t.Name
+}
+
 // Get Runner action Unix time.
 func (t *Task) GetActionTime() int64 {
 	return t.ActionAt
@@ -319,7 +350,25 @@ func (t *Task) GetActionTime() int64 {
 
 // Get Runner State.
 func (t *Task) GetState() State {
-	return t.Status
+	return t.State
+}
+
+// Set Runner State.
+func (t *Task) SetState(s State) {
+	t.State = s
+}
+
+// Runner Expired status.
+func (t *Task) Expired() bool {
+	// not expired.
+	if (time.Now().Unix() < t.ExpiredAt) || t.ExpiredAt <= 0 {
+		t.State = Queued
+		return false
+	}
+	// update status.
+	t.State = Expired
+
+	return true
 }
 
 // Initialize runner with context, An error occurred will not be call Run function.
@@ -328,11 +377,19 @@ func (t *Task) Init(ctx context.Context) error {
 	// new logger.
 	t.NewLogger(ctx)
 	// set task tid.
-	t.SetTid()
+	if len(t.Tid) == 0 {
+		return t.SetTid()
+	}
+	// set task rid.
+	if len(t.Rid) == 0 {
+		return t.SetRid()
+	}
 	// task created.
-	t.Created()
+	if t.CreatedAt == 0 {
+		t.Created()
+	}
 	// task set init.
-	t.Status = Init
+	t.State = Init
 
 	return nil
 }
@@ -350,7 +407,7 @@ func (t *Task) Finalizer(err error) {
 	// stat data.
 	defer t.stat()
 
-	switch t.Status {
+	switch t.State {
 	case Canceled:
 		break
 	case Stopped:
@@ -366,16 +423,16 @@ func (t *Task) Finalizer(err error) {
 
 // Stop runner.
 func (t *Task) Stop() error {
-	if t.Status != Running {
+	if t.State != Running {
 		return NotRunErr
 	}
-	t.Status = Stopped
+	t.State = Stopped
 	return nil
 }
 
 // Cancel Runner.
 func (t *Task) Cancel() {
-	t.Status = Canceled
+	t.State = Canceled
 }
 
 // Check Runner is effective, An error occurred will not be call Run function..
@@ -398,33 +455,7 @@ func (t *Task) Check() error {
 	return nil
 }
 
-// Runner Expired status, when false Scheduler will put into Queuer.
-func (t *Task) Expired() bool {
-	// not expired.
-	if (time.Now().Unix() < t.ExpiredAt) || t.ExpiredAt <= 0 {
-		t.Status = Queued
-		return false
-	}
-	// update status.
-	t.Status = Expired
-
-	return true
-}
-
-// New task.
-func NewTask(name string, opts ...TaskOption) Task {
-	t := Task{
-		Status:     Created,
-		MaxRetries: 5,
-	}
-
-	// call task init.
-	t.Init(context.TODO())
-
-	// range options.
-	for _, opt := range opts {
-		opt.Apply(&t)
-	}
-
-	return t
+// Runner Reusable, when true Scheduler will put into Queuer.
+func (t *Task) Reusable() bool {
+	return !t.Expired() && (t.MaxRuns == 0 || t.Runs < t.MaxRuns)
 }

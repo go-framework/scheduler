@@ -66,6 +66,20 @@ func ZapConfigFromContext(ctx context.Context) (*zap.Config, bool) {
 	return config, ok
 }
 
+// zap Name context key.
+type zapNameContextKey struct{}
+
+// New Zap Name context.
+func NewZapNameContext(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, zapNameContextKey{}, name)
+}
+
+// Get Zap Name from context.
+func ZapNameFromContext(ctx context.Context) (string, bool) {
+	name, ok := ctx.Value(zapNameContextKey{}).(string)
+	return name, ok
+}
+
 // zap Option context key.
 type zapOptionContextKey struct{}
 

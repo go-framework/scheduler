@@ -145,7 +145,7 @@ func (t *Task) NewLogger(ctx context.Context) *zap.Logger {
 	}
 
 	// set logger name.
-	t.logger = t.logger.Named(t.Name).With(zap.String("rid", t.Rid), zap.String("tid", t.Tid))
+	t.logger = t.logger.Named(t.Name).With(zap.String("mark", "task"), zap.String("rid", t.Rid), zap.String("tid", t.Tid))
 
 	return t.logger
 }

@@ -100,8 +100,12 @@ type Scheduler interface {
 	GetQueuer() Queuer
 	// Get Logger.
 	GetLogger() *zap.Logger
+	// Get Metrics.
+	GetMetrics(MetricsType) Meter
 	// Get error chan.
 	Error() <-chan error
+	// Get runner done chan.
+	Done() <-chan Runner
 
 	// Initialize scheduler with context.
 	Init(context.Context) error
@@ -116,8 +120,19 @@ type Scheduler interface {
 	RemoveRunner(string) error
 }
 
-// Progress interface.
-type Progresser interface {
-	// Progress.
-	Progress(event string, data interface{})
+// Metrics type.
+type MetricsType int
+
+const (
+	ErrorsMetrics MetricsType = iota + 1
+	TotalMetrics
+	RunsMetrics
+	SuccessesMetrics
+	FailuresMetrics
+	RetriesMetrics
+)
+
+// Meter interface.
+type Meter interface {
+	Count() int64
 }

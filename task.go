@@ -28,6 +28,8 @@ type Task struct {
 	//
 	// task logger.
 	logger *zap.Logger
+	// task context.
+	context context.Context
 	//
 	//
 	// Task property.
@@ -220,7 +222,6 @@ func (t *Task) InQueued() {
 
 // Start Task.
 func (t *Task) Start() {
-	t.Elapsed = time.Now().Unix()
 	t.State = Running
 }
 
@@ -259,6 +260,11 @@ func (t *Task) Finished(err error) {
 // Get type of runner.
 func (t *Task) GetType() string {
 	return t.Type
+}
+
+// Get Context.
+func (t Task) GetContext() context.Context {
+	return t.context
 }
 
 // Get template of Runner.
@@ -374,6 +380,10 @@ func (t *Task) Expired() bool {
 // Initialize runner with context, An error occurred will not be call Run function.
 // will calc task md5 set into task tid, and call Created function.
 func (t *Task) Init(ctx context.Context) error {
+	// elapsed start.
+	t.Elapsed = time.Now().Unix()
+	// set context.
+	t.context = ctx
 	// new logger.
 	t.NewLogger(ctx)
 	// set task tid.

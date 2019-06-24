@@ -108,6 +108,32 @@ func (this *Schedule) scheduler(runner Runner) {
 				err = fmt.Errorf("%v", v)
 			}
 		}
+
+		// remove runner from RealtimeStore.
+		if err := this.store.Delete(runner); err != nil {
+			this.Errors.Mark(1)
+			if this.error != nil {
+				this.error <- err
+			}
+		}
+
+		// stat runs.
+		this.Runs.Mark(-1)
+
+		// receive value from chan, then can run next goroutine.
+		<-this.waiting
+	}()
+
+	// get recover.
+	defer func() {
+		if r := recover(); r != nil {
+			switch v := r.(type) {
+			case error:
+				err = v
+			default:
+				err = fmt.Errorf("%v", v)
+			}
+		}
 		// finalizer runner.
 		runner.Finalizer(err)
 		// get runner status.
@@ -146,19 +172,7 @@ func (this *Schedule) scheduler(runner Runner) {
 		} else {
 			this.logger.Debug("give up runner", zap.String("id", runner.GetId()), zap.String("name", runner.GetName()), zap.String("state", runner.GetState().String()), zap.Error(err))
 		}
-		// remove runner from RealtimeStore.
-		if err := this.store.Delete(runner); err != nil {
-			this.Errors.Mark(1)
-			if this.error != nil {
-				this.error <- err
-			}
-		}
 
-		// stat runs.
-		this.Runs.Mark(1)
-
-		// receive value from chan, then can run next goroutine.
-		<-this.waiting
 	}()
 
 	// store runner into RealtimeStore.
@@ -309,8 +323,8 @@ func (this *Schedule) Printf(format string, v ...interface{}) {
 }
 
 // schedule print metrics.
-func (this *Schedule) printMetrics(freq time.Duration) {
-	ticker := time.NewTicker(freq)
+func (this *Schedule) logMetrics() {
+	ticker := time.NewTicker(this.PrintStatInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -318,7 +332,7 @@ func (this *Schedule) printMetrics(freq time.Duration) {
 			this.logger.Debug("metrics context exit...")
 			return
 		case <-ticker.C:
-			metrics.Log(metrics.DefaultRegistry, freq, this)
+			metrics.Log(metrics.DefaultRegistry, this.PrintStatInterval, this)
 		}
 	}
 }
@@ -385,6 +399,16 @@ func (this *Schedule) Init(ctx context.Context) error {
 		this.context = NewQueuerContext(this.context, this.queue)
 
 		this.status = Init
+
+		// go print metrics.
+		if this.EnablePrintStat {
+			go this.logMetrics()
+		}
+
+		// go stat metrics.
+		if this.EnableStat {
+			go this.stat()
+		}
 	})
 
 	this.logger.Debug("init ...")
@@ -632,17 +656,6 @@ func New(queue Queuer, store RealtimeStore, opts ...ScheduleOption) Scheduler {
 	}
 
 	e.waiting = make(chan struct{}, e.MaxConcurrent)
-
-	// go print metrics.
-	if e.EnablePrintStat {
-		e.EnableStat = true
-		go e.printMetrics(e.PrintStatInterval)
-	}
-
-	// go stat metrics.
-	if e.EnableStat {
-		go e.stat()
-	}
 
 	return e
 }

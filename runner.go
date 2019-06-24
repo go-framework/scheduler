@@ -43,6 +43,11 @@ func (r *idRunner) GetState() State {
 	return Created
 }
 
+// Get Context.
+func (r *idRunner) GetContext() context.Context {
+	return nil
+}
+
 // Initialize runner with context, An error occurred will not be call Run function.
 func (r *idRunner) Init(context.Context) error {
 	return nil

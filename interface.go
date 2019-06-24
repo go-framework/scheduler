@@ -32,6 +32,8 @@ type Runner interface {
 	GetActionTime() int64
 	// Get Runner State.
 	GetState() State
+	// Get Context.
+	GetContext() context.Context
 
 	// Initialize Runner with context, An error occurred will not be call Run function.
 	Init(context.Context) error
